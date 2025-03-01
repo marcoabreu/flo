@@ -197,11 +197,9 @@ impl Worker {
             .and_then(|r| r);
     
         if let Err(err) = res {
-            if let Some(flo_w3map::error::Error::Storage(
-                flo_w3storage::error::Error::Casc(_),
-            )) = StdError::source(&err).and_then(|e| e.downcast_ref::<flo_w3map::error::Error>())
+            if let Some(flo_w3map::error::Error::Storage(_)) = StdError::source(&err).and_then(|e| e.downcast_ref::<flo_w3map::error::Error>())
             {
-                // Special handling for Casc errors:
+                // Special handling for Map storage errors:
                 tracing::error!("Error extracting WC3Map: {err}");
                 reply_sender
                     .clone()
