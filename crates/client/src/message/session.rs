@@ -8,6 +8,8 @@ use crate::controller::{
 };
 use crate::error::{Error, Result};
 use crate::message::stream::MessageStream;
+use crate::messages::GenericFloErrorCode;
+use crate::messages::GenericFloError;
 use crate::observer::{ObserverClient, ObserverHostShared};
 use crate::platform::{
   GetClientPlatformInfo, GetMapDetail, GetMapList, KillTestGame, Platform, PlatformStateError,
@@ -26,6 +28,7 @@ use s2_grpc_utils::S2ProtoPack;
 use std::sync::Arc;
 use tokio::sync::mpsc::{channel, Receiver, Sender, WeakSender};
 use tracing_futures::Instrument;
+use std::error::Error as StdError;
 
 #[derive(Debug)]
 pub struct Session {
@@ -183,14 +186,42 @@ impl Worker {
         self.send_frame::<PacketGameStartRequest>(req).await?;
       }
       IncomingMessage::StartTestGame(msg) => {
-        self
-          .platform
-          .send(crate::platform::StartTestGame {
-            name: msg.name,
-            outgoing_sender: reply_sender.downgrade(),
-          })
-          .await??;
-      }
+        let res = self
+            .platform
+            .send(crate::platform::StartTestGame {
+                name: msg.name,
+                outgoing_sender: reply_sender.downgrade(),
+            })
+            .await
+            .map_err(Error::from)
+            .and_then(|r| r);
+    
+        if let Err(err) = res {
+            if let Some(flo_w3map::error::Error::Storage(
+                flo_w3storage::error::Error::Casc(_),
+            )) = StdError::source(&err).and_then(|e| e.downcast_ref::<flo_w3map::error::Error>())
+            {
+                // Special handling for Casc errors:
+                tracing::error!("Error extracting WC3Map: {err}");
+                reply_sender
+                    .clone()
+                    .send(OutgoingMessage::GenericFloError(
+                        GenericFloError::new(err, GenericFloErrorCode::GamefilesCorrupted),
+                    ))
+                    .await?;
+            } else {
+                // Generic error handling:
+                tracing::error!("Unexpected error during StartTestGame: {err}");
+                reply_sender
+                    .clone()
+                    .send(OutgoingMessage::GenericFloError(
+                        GenericFloError::new(err, GenericFloErrorCode::Unknown),
+                    ))
+                    .await?;
+            }
+        }
+    }
+    
       IncomingMessage::KillTestGame => {
         self.platform.notify(KillTestGame).await?;
       }
